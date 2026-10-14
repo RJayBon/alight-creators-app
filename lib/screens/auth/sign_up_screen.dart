@@ -30,22 +30,54 @@ class _SignUpScreenState extends State<SignUpScreen> {
   String? _gender;
   String? _error;
   bool _busy = false;
+  bool _showPw = false;
   String _prevName = '';
   bool _handleTouched = false;
 
   @override
+  void initState() {
+    super.initState();
+    // First-run gate: a public sign-up must not be able to create the *first*
+    // account, because that account would land as `role = 'user'` and the
+    // install would then have no way to reach /admin (promotion requires an
+    // admin). Hand the user to the setup form instead.
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      if (await AuthService.instance.needsSetup()) {
+        if (!mounted) return;
+        Navigator.of(context).pushReplacementNamed('/setup');
+      }
+    });
+  }
+
+  @override
   void dispose() {
-    for (final c in [_name, _handle, _email, _birth, _customGender, _pw, _cpw]) {
+    for (final c in [
+      _name,
+      _handle,
+      _email,
+      _birth,
+      _customGender,
+      _pw,
+      _cpw
+    ]) {
       c.dispose();
     }
     super.dispose();
   }
 
+  bool get _canGoBack => Navigator.of(context).canPop();
+
   Future<void> _submit() async {
     setState(() => _error = null);
 
-    if (!RateLimitService.instance.allow('register', max: 3, windowSec: 3600)) {
-      setState(() => _error = 'Too many sign-up attempts. Try again later.');
+    if (!RateLimitService.instance
+        .allow('register', max: 3, windowSec: 3600)) {
+      final wait = RateLimitService.instance
+          .retryAfter('register', max: 3, windowSec: 3600);
+      setState(() => _error = wait > 0
+          ? 'Too many sign-up attempts. Try again in ${wait ~/ 60} second(s).'
+          : 'Too many sign-up attempts. Try again later.');
       return;
     }
 
@@ -57,10 +89,22 @@ class _SignUpScreenState extends State<SignUpScreen> {
         ? null
         : Validators.birthdate(_birth.text);
 
-    if (nameErr != null) { setState(() => _error = nameErr); return; }
-    if (handleErr != null) { setState(() => _error = handleErr); return; }
-    if (emailErr != null) { setState(() => _error = emailErr); return; }
-    if (pwErr != null) { setState(() => _error = pwErr); return; }
+    if (nameErr != null) {
+      setState(() => _error = nameErr);
+      return;
+    }
+    if (handleErr != null) {
+      setState(() => _error = handleErr);
+      return;
+    }
+    if (emailErr != null) {
+      setState(() => _error = emailErr);
+      return;
+    }
+    if (pwErr != null) {
+      setState(() => _error = pwErr);
+      return;
+    }
     if (_pw.text != _cpw.text) {
       setState(() => _error = 'Passwords do not match.');
       return;
@@ -91,8 +135,20 @@ class _SignUpScreenState extends State<SignUpScreen> {
     );
     if (!mounted) return;
     setState(() => _busy = false);
-    if (err != null) { setState(() => _error = err); return; }
-    Navigator.of(context).pushNamedAndRemoveUntil('/home', (r) => false);
+    if (err != null) {
+      setState(() => _error = err);
+      return;
+    }
+    RateLimitService.instance.reset('register');
+
+    // Same fix as login: AuthService already flipped the root `_Bootstrap`
+    // to HomeShell, so we return to it instead of pushing a duplicate shell
+    // with `pushNamedAndRemoveUntil('/home', (r) => false)`.
+    if (_canGoBack) {
+      Navigator.of(context).popUntil((r) => r.isFirst);
+    } else {
+      Navigator.of(context).pushNamedAndRemoveUntil('/', (r) => false);
+    }
   }
 
   String _slugOf(String v) => v
@@ -142,7 +198,10 @@ class _SignUpScreenState extends State<SignUpScreen> {
                         label: 'Display Name',
                         hintText: 'E.g. RJ AY',
                         controller: _name,
+                        textInputAction: TextInputAction.next,
                         onChanged: (v) {
+                          // Only auto-slug while the user hasn't edited the
+                          // handle by hand.
                           if (!_handleTouched ||
                               _handle.text == _slugOf(_prevName)) {
                             _setHandle(_slugOf(v));
@@ -166,6 +225,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
                         hintText: 'you@example.com',
                         controller: _email,
                         keyboardType: TextInputType.emailAddress,
+                        textInputAction: TextInputAction.next,
+                        autofillHints: const [AutofillHints.email],
                       ),
                       const SizedBox(height: 16),
                       BirthdateField(controller: _birth),
@@ -180,14 +241,28 @@ class _SignUpScreenState extends State<SignUpScreen> {
                         label: 'Password',
                         hintText: 'At least 6 characters',
                         controller: _pw,
-                        obscureText: true,
+                        obscureText: !_showPw,
+                        textInputAction: TextInputAction.next,
+                        autofillHints: const [AutofillHints.newPassword],
+                        trailing: TextButton(
+                          style: TextButton.styleFrom(
+                              padding: EdgeInsets.zero,
+                              minimumSize: Size.zero,
+                              tapTargetSize:
+                                  MaterialTapTargetSize.shrinkWrap),
+                          onPressed: () => setState(() => _showPw = !_showPw),
+                          child: Text(_showPw ? 'Hide' : 'Show',
+                              style: const TextStyle(
+                                  color: AppColors.accent, fontSize: 13)),
+                        ),
                       ),
                       const SizedBox(height: 16),
                       LabeledField(
                         label: 'Confirm Password',
                         hintText: 'Re-enter password',
                         controller: _cpw,
-                        obscureText: true,
+                        obscureText: !_showPw,
+                        textInputAction: TextInputAction.done,
                       ),
                       if (_error != null) ...[
                         const SizedBox(height: 12),
@@ -221,13 +296,14 @@ class _SignUpScreenState extends State<SignUpScreen> {
                           ),
                         ],
                       ),
+                      const SizedBox(height: 8),
                     ],
                   ),
                 ),
               ),
             ),
           ),
-          const TopBackButton(),
+          if (_canGoBack) const TopBackButton(),
         ],
       ),
     );

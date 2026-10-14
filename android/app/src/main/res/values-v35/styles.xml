@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Android 15 (API 35) forces edge-to-edge on activities whose theme does
+         not opt out. uCrop is not edge-to-edge aware, which is the entire reason
+         image_cropper 8.1.0 introduced this style. Without this qualifier the
+         crop screen lays its toolbar out under the status bar and its result
+         handling goes sideways on Android 15 devices. -->
+    <style name="Ucrop.CropTheme" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="android:windowOptOutEdgeToEdgeEnforcement">true</item>
+    </style>
+</resources>

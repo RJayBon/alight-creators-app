@@ -1,19 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../services/auth_service.dart';
+import '../services/database_service.dart';
+import '../services/seed_service.dart';
+import '../services/session_service.dart';
+import '../theme.dart';
 import 'screens/auth/forgot_password_screen.dart';
 import 'screens/auth/login_screen.dart';
 import 'screens/auth/reset_password_screen.dart';
+import 'screens/auth/setup_screen.dart';
 import 'screens/auth/sign_up_screen.dart';
 import 'screens/not_found_screen.dart';
 import 'screens/profile/public_profile_screen.dart';
 import 'screens/shell/home_shell.dart';
 import 'screens/welcome_screen.dart';
-import 'services/auth_service.dart';
-import 'services/database_service.dart';
-import 'services/seed_service.dart';
-import 'services/session_service.dart';
-import 'theme.dart';
 
 class AlightCreatorsApp extends StatelessWidget {
   const AlightCreatorsApp({super.key});
@@ -31,6 +32,7 @@ class AlightCreatorsApp extends StatelessWidget {
           '/': (_) => const _Bootstrap(),
           '/login': (_) => const LoginScreen(),
           '/signup': (_) => const SignUpScreen(),
+          '/setup': (_) => const SetupScreen(),
           '/forgot': (_) => const ForgotPasswordScreen(),
           '/reset': (_) => const ResetPasswordScreen(),
           '/home': (_) => const HomeShell(),
@@ -43,7 +45,15 @@ class AlightCreatorsApp extends StatelessWidget {
               builder: (_) => PublicProfileScreen(username: username),
             );
           }
-          return null;
+          // Previously this returned `null` for anything unrecognised, which
+          // makes Flutter throw "Routes called with a non-existent route name"
+          // — a red screen, not a graceful fallback. Every other push in the
+          // app is to a declared route, so the only way to reach here is a
+          // typo or a deep link we do not handle: land on /404 instead.
+          return MaterialPageRoute(
+            settings: RouteSettings(name: '${settings.name}'),
+            builder: (_) => const NotFoundScreen(),
+          );
         },
         builder: (context, child) {
           final scale = MediaQuery.textScalerOf(context).clamp(
@@ -60,10 +70,22 @@ class AlightCreatorsApp extends StatelessWidget {
   }
 }
 
-/// Boots the app: opens the DB, seeds if empty, restores the session,
-/// then shows either the shell or the welcome screen. Shows a loading
-/// indicator while doing so, so the user never sees a frozen screen.
-/// If something throws, offers a Retry button.
+/// Boots the app: opens the DB, seeds if configured, restores the session,
+/// then picks the right entry screen. Shows a loading indicator while doing so,
+/// so the user never sees a frozen screen. If something throws, offers Retry.
+///
+/// The entry decision is a three-way branch, evaluated on every auth change:
+///
+///   1. no accounts at all           → [SetupScreen] (create the first admin)
+///   2. signed in                    → [HomeShell]
+///   3. accounts exist, signed out   → [WelcomeScreen]
+///
+/// Case 1 is what makes a fresh install land on the admin-registration form
+/// instead of a Welcome screen whose every button leads to a login form for a
+/// database that has nobody in it. It is also re-evaluated live, so deleting
+/// the last account (self-service delete, or the admin "clear all data"
+/// action) returns the app to setup rather than stranding the user on an empty
+/// shell.
 class _Bootstrap extends StatefulWidget {
   const _Bootstrap();
 
@@ -73,6 +95,7 @@ class _Bootstrap extends StatefulWidget {
 
 class _BootstrapState extends State<_Bootstrap> {
   late Future<void> _init;
+  bool _needsSetup = false;
 
   @override
   void initState() {
@@ -85,6 +108,7 @@ class _BootstrapState extends State<_Bootstrap> {
     await SeedService.instance.seedIfEmpty();
     await SessionService.instance.load();
     await AuthService.instance.restoreSession();
+    _needsSetup = await AuthService.instance.needsSetup();
   }
 
   void _retry() {
@@ -109,7 +133,8 @@ class _BootstrapState extends State<_Bootstrap> {
         }
         final loggedIn =
             context.select<AuthService, bool>((a) => a.isLoggedIn);
-        return loggedIn ? const HomeShell() : const WelcomeScreen();
+        if (loggedIn) return const HomeShell();
+        return _needsSetup ? const SetupScreen() : const WelcomeScreen();
       },
     );
   }

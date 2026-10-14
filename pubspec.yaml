@@ -16,11 +16,11 @@ dependencies:
   shared_preferences: ^2.3.2
   provider: ^6.1.2
   image_picker: ^1.1.2
-  image_cropper: ^8.0.2
+  # image_cropper was REMOVED here (it was ^8.0.2). See the note above the
+  # `flutter:` section for why, and do not re-add it.
   flutter_image_compress: ^2.3.0
   video_player: ^2.9.2
   url_launcher: ^6.3.1
-  share_plus: ^10.1.0
   intl: ^0.19.0
   crypto: ^3.0.5
   bcrypt: ^1.1.3
@@ -29,6 +29,31 @@ dev_dependencies:
   flutter_lints: ^3.0.0
   flutter_launcher_icons: ^0.14.4
 
+# ---------------------------------------------------------------------------
+# image_cropper is deliberately NOT a dependency any more (it was ^8.0.2).
+#
+# Its cropImage() opens a *second Android activity* and waits for
+# onActivityResult on the Flutter one; on the target device that callback never
+# arrives, so the awaited Future hangs forever, `_picking` never clears, and the
+# profile screen looks crashed while saving. Cropping is now in-app:
+# lib/widgets/image_crop_sheet.dart (frame + gestures) with the pixel work in
+# FileService.renderCrop (ui.PictureRecorder + drawImageRect).
+#
+# Keeping the package out of this file is the guard: a stale, not-yet-replaced
+# lib/services/file_service.dart now fails to build with
+#   Target of URI doesn't exist: 'package:image_cropper/image_cropper.dart'
+# instead of silently rebuilding the old uCrop path. That silent rebuild is
+# exactly what happened after the last batch — logcat still showed
+# UCropActivity being destroyed (`assignParent to null: DecorView[…UCropActivity]`)
+# because the plugin code was still the code running.
+#
+# After editing this file: flutter pub get   (rewrites pubspec.lock).
+# Optional now that nothing references uCrop: delete the
+# com.yalantis.ucrop.UCropActivity <activity> block from
+# android/app/src/main/AndroidManifest.xml and the Ucrop.CropTheme entries from
+# res/values/styles.xml + res/values-v35/styles.xml.
+# ---------------------------------------------------------------------------
+
 flutter:
   uses-material-design: true
   assets:
@@ -36,8 +61,14 @@ flutter:
     - assets/images/am-mascot.webp
     - assets/images/default-avatar.webp
     - assets/images/backgrounds/landing_background.webp
-    - assets/seed/thumbnails/keep/
-    - assets/seed/videos/
+    # Seed asset folders are NOT declared: the demo catalogue in
+    # lib/data/seed_data.dart is empty by design (posts are created in-app), so
+    # bundling them would add weight for files nothing references. Declaring a
+    # folder that does not exist also breaks `flutter build`, which is exactly
+    # the trap that made this repo un-buildable on a fresh clone. If you ever
+    # flip SeedData.enabled back to true, re-add:
+    #   - assets/seed/thumbnails/keep/
+    #   - assets/seed/videos/
 
   fonts:
     - family: VarelaRound

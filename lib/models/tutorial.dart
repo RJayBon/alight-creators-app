@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../utils/category_colors.dart';
+
 class Tutorial {
   Tutorial({
     this.tutorialId,
@@ -43,17 +45,26 @@ class Tutorial {
   double avgQuality;
   double avgClarity;
 
-  Color get accent => _accentFor(category);
+  /// Single source of truth for the category colour.
+  ///
+  /// This class used to carry its own private copy of the `accentForCategory`
+  /// switch (identical at the time of writing). Two hand-maintained copies of
+  /// the same mapping is how a palette drifts, so the duplicate is gone and
+  /// `utils/category_colors.dart` is now the only definition.
+  Color get accent => accentForCategory(category);
 
-  static Color _accentFor(String c) {
-    switch (c) {
-      case 'Beginner':      return const Color(0xFF2DD4BF);
-      case 'Intermediate':  return const Color(0xFFA78BFA);
-      case 'Advanced':      return const Color(0xFFF472B6);
-      case 'Tips & Tricks': return const Color(0xFF38BDF8);
-      default:              return const Color(0xFF00D2FF);
-    }
-  }
+  double get avgScore => ratingCount == 0 ? 0 : (avgQuality + avgClarity) / 2;
+
+  bool get hasGuideVideo =>
+      (guideVideoFile?.isNotEmpty ?? false) ||
+      (guideVideoUrl?.isNotEmpty ?? false);
+
+  /// The finished result the creator attached. Until now only the *composer*
+  /// read this (to offer removal) — `tutorial_detail_screen` rendered the guide
+  /// clip and nothing else, so a viewer could not watch the result clip at all.
+  bool get hasResultVideo =>
+      (resultVideoFile?.isNotEmpty ?? false) ||
+      (resultVideoUrl?.isNotEmpty ?? false);
 
   Map<String, dynamic> toMap() => {
         if (tutorialId != null) 'tutorial_id': tutorialId,
@@ -71,8 +82,8 @@ class Tutorial {
       };
 
   factory Tutorial.fromMap(Map<String, dynamic> m) => Tutorial(
-        tutorialId: m['tutorial_id'] as int?,
-        userId: m['user_id'] as int?,
+        tutorialId: (m['tutorial_id'] as num?)?.toInt(),
+        userId: (m['user_id'] as num?)?.toInt(),
         title: (m['title'] as String?) ?? '',
         description: (m['description'] as String?) ?? '',
         category: (m['category'] as String?) ?? 'Beginner',
@@ -81,12 +92,15 @@ class Tutorial {
         guideVideoFile: m['guide_video_file'] as String?,
         resultVideoUrl: m['result_video_url'] as String?,
         resultVideoFile: m['result_video_file'] as String?,
-        views: (m['views'] as int?) ?? 0,
+        views: (m['views'] as num?)?.toInt() ?? 0,
         createdAt: m['created_at'] as String?,
         authorName: m['author_name'] as String?,
         authorUsername: m['author_username'] as String?,
         authorAvatar: m['author_avatar'] as String?,
-        ratingCount: (m['rating_count'] as int?) ?? 0,
+        // Aggregate columns come back as REAL from AVG() and INTEGER from
+        // COUNT(); a bare `as int` on a value SQLite stored as 4.0 throws a
+        // ClassCastException that used to take the whole list down.
+        ratingCount: (m['rating_count'] as num?)?.toInt() ?? 0,
         avgQuality: (m['avg_quality'] as num?)?.toDouble() ?? 0,
         avgClarity: (m['avg_clarity'] as num?)?.toDouble() ?? 0,
       );
@@ -109,16 +123,16 @@ class TutorialStep {
 
   Map<String, dynamic> toMap() => {
         if (stepId != null) 'step_id': stepId,
-        'tutorial_id': tutorialId,
+        if (tutorialId != null) 'tutorial_id': tutorialId,
         'step_number': stepNumber,
         'step_title': stepTitle,
         'step_description': stepDescription,
       };
 
   factory TutorialStep.fromMap(Map<String, dynamic> m) => TutorialStep(
-        stepId: m['step_id'] as int?,
-        tutorialId: m['tutorial_id'] as int?,
-        stepNumber: (m['step_number'] as int?) ?? 0,
+        stepId: (m['step_id'] as num?)?.toInt(),
+        tutorialId: (m['tutorial_id'] as num?)?.toInt(),
+        stepNumber: (m['step_number'] as num?)?.toInt() ?? 0,
         stepTitle: (m['step_title'] as String?) ?? '',
         stepDescription: (m['step_description'] as String?) ?? '',
       );
@@ -135,7 +149,7 @@ class TutorialResource {
 
   int? resourceId;
   int? tutorialId;
-  String resourceType; // 'preset' | 'asset'
+  String resourceType;
   String resourceName;
   String resourceUrl;
 
@@ -143,31 +157,19 @@ class TutorialResource {
 
   Map<String, dynamic> toMap() => {
         if (resourceId != null) 'resource_id': resourceId,
-        'tutorial_id': tutorialId,
+        if (tutorialId != null) 'tutorial_id': tutorialId,
         'resource_type': resourceType,
         'resource_name': resourceName,
         'resource_url': resourceUrl,
       };
 
   factory TutorialResource.fromMap(Map<String, dynamic> m) => TutorialResource(
-        resourceId: m['resource_id'] as int?,
-        tutorialId: m['tutorial_id'] as int?,
-        resourceType: (m['resource_type'] as String?) ?? 'preset',
+        resourceId: (m['resource_id'] as num?)?.toInt(),
+        tutorialId: (m['tutorial_id'] as num?)?.toInt(),
+        resourceType: (m['resource_type'] as num?)?.toInt() == null
+            ? (m['resource_type'] as String?) ?? 'asset'
+            : 'asset',
         resourceName: (m['resource_name'] as String?) ?? '',
         resourceUrl: (m['resource_url'] as String?) ?? '',
       );
-}
-
-class TutorialRating {
-  TutorialRating({
-    required this.tutorialId,
-    required this.userId,
-    required this.quality,
-    required this.clarity,
-  });
-
-  int tutorialId;
-  int userId;
-  int quality;
-  int clarity;
 }

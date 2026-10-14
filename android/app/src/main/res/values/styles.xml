@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- ===================== uCrop theme (image_cropper) =====================
+         Why this file exists: the theme the cropper's activity points at must
+         resolve, and its attributes must be present when UCropActivity inflates.
+         image_cropper 8.1.0 ships this exact style in its own res/values +
+         res/values-v35; declaring it here too means:
+           * the manifest line works even if the app is ever resolved back to
+             image_cropper 8.0.2 (which has no such style and would fail to build);
+           * API 35 edge-to-edge is opted out on OUR terms, not the AAR's.
+         App resources override library resources of the same name during merge,
+         so this is authoritative — keep it in sync with the plugin if you upgrade.
+    -->
+    <style name="Ucrop.CropTheme" parent="Theme.AppCompat.Light.NoActionBar"/>
+</resources>

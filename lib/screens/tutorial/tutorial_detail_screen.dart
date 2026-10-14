@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:video_player/video_player.dart';
@@ -7,6 +9,7 @@ import '../../services/auth_service.dart';
 import '../../services/file_service.dart';
 import '../../services/tutorial_service.dart';
 import '../../theme.dart';
+import '../../widgets/app_video_player.dart';
 import '../../widgets/category_chip.dart';
 import '../../widgets/confirm_dialog.dart';
 import '../../widgets/pill_button.dart';
@@ -24,6 +27,11 @@ class TutorialDetailScreen extends StatefulWidget {
 }
 
 class _TutorialDetailScreenState extends State<TutorialDetailScreen> {
+  /// Which of the tutorial's clips the player is showing. A tutorial has at
+  /// most two — the guide and the result — so this is a two-way switch, not a
+  /// playlist (hence no next/previous anywhere in the player).
+  bool _showResult = false;
+
   Tutorial? _tutorial;
   List<TutorialStep> _steps = [];
   List<TutorialResource> _resources = [];
@@ -136,6 +144,27 @@ class _TutorialDetailScreenState extends State<TutorialDetailScreen> {
     }
   }
 
+  /// `launchUrl(Uri.parse(raw))` throws FormatException on a malformed URL
+  /// and returns false when no browser is installed; both used to be invisible
+  /// failures (an unhandled async error / a dead button).
+  Future<void> _openResource(BuildContext context, String raw) async {
+    final uri = Uri.tryParse(raw.trim());
+    var ok = false;
+    if (uri != null &&
+        (uri.scheme == 'http' || uri.scheme == 'https') &&
+        uri.hasAuthority) {
+      try {
+        ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      } catch (_) {
+        ok = false;
+      }
+    }
+    if (!ok && context.mounted) {
+      Toast.show(context, 'That download link is not a valid web address.',
+          isError: true);
+    }
+  }
+
   Future<void> _delete() async {
     final ok = await confirmDialog(context,
         title: 'Delete tutorial?',
@@ -145,8 +174,18 @@ class _TutorialDetailScreenState extends State<TutorialDetailScreen> {
         danger: true);
     if (!ok) return;
     try {
-      await TutorialService.instance.deleteTutorial(widget.tutorialId);
+      // `deleteTutorialWithFiles` also unlinks the thumbnail + both videos;
+      // deleting only the row leaked every uploaded byte forever.
+      final gone =
+          await TutorialService.instance.deleteTutorialWithFiles(
+              widget.tutorialId);
       if (!mounted) return;
+      if (!gone) {
+        Toast.show(context, 'That tutorial was already removed.',
+            isError: true);
+        Navigator.of(context).pop(true);
+        return;
+      }
       Toast.show(context, 'Tutorial deleted.');
       Navigator.of(context).pop();
     } catch (_) {
@@ -280,7 +319,7 @@ class _TutorialDetailScreenState extends State<TutorialDetailScreen> {
             const SizedBox(height: 20),
 
             // ---------- Video ----------
-            _VideoThumb(tutorial: t),
+            _videoSection(t),
             const SizedBox(height: 24),
 
             // ---------- Resources ----------
@@ -398,13 +437,90 @@ class _TutorialDetailScreenState extends State<TutorialDetailScreen> {
                           fontSize: 14)),
                 ),
                 IconButton(
+                  tooltip: 'Open link',
                   icon: const Icon(Icons.download,
                       color: AppColors.accent, size: 20),
-                  onPressed: () => launchUrl(Uri.parse(r.resourceUrl)),
+                  onPressed: () => _openResource(context, r.resourceUrl),
                 ),
               ],
             ),
           ),
+      ],
+    );
+  }
+
+  /// Guide / Result switch + the player host.
+  ///
+  /// Before this, `result_video_file` was stored, listed for deletion and
+  /// rendered in the composer preview — but the detail screen only ever wired
+  /// up the *guide* clip, so a "here's what you'll end up making" video was
+  /// invisible on the one screen people actually watch.
+  Widget _videoSection(Tutorial t) {
+    final hasGuide = t.hasGuideVideo;
+    final hasResult = t.hasResultVideo;
+    if (!hasGuide || !hasResult) {
+      // One clip only: no tabs to pretend at, but still prefer whichever clip
+      // actually exists (a tutorial can ship just a result video).
+      return Align(
+        alignment: Alignment.centerLeft,
+        child: _VideoThumb(
+          key: ValueKey('video-${t.tutorialId}-single'),
+          tutorial: t,
+          showResult: !hasGuide && hasResult,
+        ),
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: Row(
+            children: [
+              for (final entry in const <String, bool>{
+                  'Guide clip': false,
+                  'Result clip': true,
+                }.entries)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: GestureDetector(
+                    onTap: () => setState(() => _showResult = entry.value),
+                    child: AnimatedContainer(
+                      duration: const Duration(milliseconds: 140),
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: _showResult == entry.value
+                            ? AppColors.accent
+                            : AppColors.surface,
+                        borderRadius: BorderRadius.circular(999),
+                        border: Border.all(
+                            color: _showResult == entry.value
+                                ? AppColors.accent
+                                : AppColors.border),
+                      ),
+                      child: Text(
+                        entry.key,
+                        style: TextStyle(
+                            fontSize: 12,
+                            fontWeight: FontWeight.w700,
+                            color: _showResult == entry.value
+                                ? AppColors.background
+                                : AppColors.textSecondary),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+        // The key rebuilds the host (and disposes the old controller) when the
+        // clip changes, instead of mutating a live VideoPlayerController.
+        _VideoThumb(
+          key: ValueKey('video-${t.tutorialId}-$_showResult'),
+          tutorial: t,
+          showResult: _showResult,
+        ),
       ],
     );
   }
@@ -513,10 +629,28 @@ class _TutorialDetailScreenState extends State<TutorialDetailScreen> {
   }
 }
 
-/// Lazy video widget — only initializes the video player on user tap.
+/// Player host for one tutorial clip.
+///
+/// Owns the `VideoPlayerController`: created here, disposed here — both on
+/// teardown and when the widget is given a different tutorial/clip
+/// (`didUpdateWidget`). The overlay deliberately does *not* dispose it, so
+/// there is exactly one owner and no path where the overlay outlives a
+/// controller it is still listening to.
+///
+/// Still lazy: nothing is decoded until the viewer taps, so a detail screen
+/// opened from the feed does not spin up a media codec for a video nobody
+/// asked to watch.
 class _VideoThumb extends StatefulWidget {
-  const _VideoThumb({required this.tutorial});
+  const _VideoThumb({
+    super.key,
+    required this.tutorial,
+    required this.showResult,
+  });
+
   final Tutorial tutorial;
+
+  /// false → the guide clip, true → the finished result.
+  final bool showResult;
 
   @override
   State<_VideoThumb> createState() => _VideoThumbState();
@@ -532,106 +666,111 @@ class _VideoThumbState extends State<_VideoThumb> {
     super.dispose();
   }
 
-  Future<void> _onPlayTap() async {
-    final t = widget.tutorial;
+  @override
+  void didUpdateWidget(_VideoThumb old) {
+    super.didUpdateWidget(old);
+    final changed = old.tutorial.tutorialId != widget.tutorial.tutorialId ||
+        old.showResult != widget.showResult;
+    if (changed && _controller != null) {
+      // Switching Guide ⇄ Result must release the old codec handle, otherwise
+      // both clips stay resident and the visible player keeps seeking the
+      // hidden one.
+      final stale = _controller;
+      _controller = null;
+      _loading = false;
+      stale?.dispose();
+    }
+  }
 
-    if (t.guideVideoFile != null && t.guideVideoFile!.isNotEmpty) {
+  String? get _file => widget.showResult
+      ? widget.tutorial.resultVideoFile
+      : widget.tutorial.guideVideoFile;
+
+  String? get _url => widget.showResult
+      ? widget.tutorial.resultVideoUrl
+      : widget.tutorial.guideVideoUrl;
+
+  bool get _hasLocal => (_file ?? '').isNotEmpty;
+  bool get _hasAny => _hasLocal || (_url ?? '').isNotEmpty;
+
+  String get _clipName => widget.showResult ? 'result clip' : 'guide clip';
+
+  String get _emptyHint =>
+      _hasAny ? 'Tap to play the $_clipName' : 'No $_clipName provided';
+
+  /// The creator's thumbnail for this tutorial, when it is on this device.
+  ///
+  /// `resolveFileSync` rather than the async variant, because this is called
+  /// from `build()`: a Future here means a new Future (and a rebuild flash) on
+  /// every parent rebuild — the exact bug `tutorial_card.dart` had.
+  File? get _poster {
+    final path = widget.tutorial.thumbnailPath;
+    if (path == null || path.isEmpty) return null;
+    return FileService.instance.resolveFileSync(path);
+  }
+
+  Future<void> _onPlayTap() async {
+    if (_hasLocal) {
       setState(() => _loading = true);
       try {
         final f = await FileService.instance
-            .resolveFile(t.guideVideoFile)
+            .resolveFile(_file)
             .timeout(const Duration(seconds: 3));
         if (f != null) {
           final vc = VideoPlayerController.file(f);
           await vc.initialize().timeout(const Duration(seconds: 8));
-          vc.setLooping(true);
-          vc.play();
+          // Looping stays on: this is a step-by-step clip you re-watch, and
+          // the overlay has no next-clip button to fall back on.
+          await vc.setLooping(true);
           if (!mounted) {
             vc.dispose();
             return;
           }
+          await vc.play();
           setState(() {
             _controller = vc;
             _loading = false;
           });
           return;
         }
+        // Row references a file that is not on this device (imported DB, or
+        // the uploads folder was cleared) — an external URL, if the creator
+        // supplied one, is the only remaining source.
       } catch (e) {
         debugPrint('[_VideoThumb] init failed: $e');
       }
       if (mounted) setState(() => _loading = false);
     }
 
-    if (t.guideVideoUrl != null && t.guideVideoUrl!.isNotEmpty) {
+    if ((_url ?? '').isNotEmpty) {
       try {
-        await launchUrl(
-          Uri.parse(t.guideVideoUrl!),
-          mode: LaunchMode.externalApplication,
-        );
+        await launchUrl(Uri.parse(_url!), mode: LaunchMode.externalApplication);
         return;
       } catch (_) {}
     }
 
     if (mounted) {
-      Toast.show(context, 'Video not available on this device.',
-          isError: true);
+      Toast.show(context, 'Video not available on this device.', isError: true);
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final t = widget.tutorial;
-
-    if (_controller != null && _controller!.value.isInitialized) {
+    if (_controller != null) {
+      final v = _controller!.value;
       return AspectRatio(
-        aspectRatio: _controller!.value.aspectRatio,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(12),
-          child: Stack(
-            alignment: Alignment.center,
-            children: [
-              VideoPlayer(_controller!),
-              IconButton(
-                icon: Icon(
-                    _controller!.value.isPlaying
-                        ? Icons.pause_circle_filled
-                        : Icons.play_circle_fill,
-                    size: 56,
-                    color: Colors.white.withValues(alpha: 0.9)),
-                onPressed: () {
-                  setState(() {
-                    _controller!.value.isPlaying
-                        ? _controller!.pause()
-                        : _controller!.play();
-                  });
-                },
-              ),
-            ],
-          ),
-        ),
+        aspectRatio:
+            v.isInitialized && v.aspectRatio > 0 ? v.aspectRatio : 16 / 9,
+        child: AppVideoPlayer(controller: _controller!, borderRadius: 12),
       );
     }
 
-    if (_loading) {
-      return AspectRatio(
-        aspectRatio: 16 / 9,
-        child: Container(
-          decoration: BoxDecoration(
-            color: AppColors.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppColors.border),
-          ),
-          child: const Center(
-            child: CircularProgressIndicator(color: AppColors.accent),
-          ),
-        ),
-      );
-    }
-
-    final hasVideo =
-        (t.guideVideoFile != null && t.guideVideoFile!.isNotEmpty) ||
-        (t.guideVideoUrl != null && t.guideVideoUrl!.isNotEmpty);
-
+    // ---------- Poster ----------
+    // The tutorial's own thumbnail, not a category-coloured gradient: the
+    // gradient showed up on every tutorial that *had* an uploaded poster, so
+    // the detail screen looked broken while the feed card next to it looked
+    // right. The gradient stays as the fallback for a missing file.
+    final poster = _poster;
     return AspectRatio(
       aspectRatio: 16 / 9,
       child: Container(
@@ -644,64 +783,113 @@ class _VideoThumbState extends State<_VideoThumb> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            DecoratedBox(
+            if (poster != null)
+              Image.file(
+                poster,
+                fit: BoxFit.cover,
+                cacheWidth: 800,
+                // A torn or unsupported file must not paint a red error box
+                // over an otherwise fine tutorial.
+                errorBuilder: (_, __, ___) => _posterGradient(),
+              )
+            else
+              _posterGradient(),
+            const DecoratedBox(
               decoration: BoxDecoration(
                 gradient: LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
                   colors: [
-                    t.accent.withValues(alpha: 0.55),
-                    AppColors.background,
+                    Color(0x33000000),
+                    Color(0x00000000),
+                    Color(0x99000000),
                   ],
+                  stops: [0.0, 0.5, 1.0],
                 ),
               ),
             ),
-            const DecoratedBox(
-              decoration: BoxDecoration(color: Color(0x66000000)),
-            ),
             Center(
               child: GestureDetector(
-                onTap: hasVideo ? _onPlayTap : null,
+                onTap: _loading ? null : (_hasAny ? _onPlayTap : null),
                 child: Container(
-                  width: 70,
-                  height: 70,
+                  width: 64,
+                  height: 64,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
                     color: Colors.black.withValues(alpha: 0.55),
                     border: Border.all(
-                        color: hasVideo
+                        color: _hasAny
                             ? AppColors.accent
                             : AppColors.textSecondary,
                         width: 2),
                   ),
                   alignment: Alignment.center,
-                  child: Icon(
-                    Icons.play_arrow_rounded,
-                    size: 40,
-                    color: hasVideo
-                        ? AppColors.accent
-                        : AppColors.textSecondary,
-                  ),
+                  child: _loading
+                      ? const SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: CircularProgressIndicator(
+                              strokeWidth: 2, color: AppColors.accent),
+                        )
+                      : Icon(
+                          Icons.play_arrow_rounded,
+                          size: 38,
+                          color: _hasAny
+                              ? AppColors.accent
+                              : AppColors.textSecondary,
+                        ),
                 ),
               ),
             ),
             Positioned(
-              left: 12,
-              bottom: 10,
-              right: 12,
-              child: Text(
-                hasVideo
-                    ? 'Tap to play guide video'
-                    : 'No guide video provided',
-                style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600),
+              left: 10,
+              bottom: 8,
+              right: 10,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      _emptyHint,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 12,
+                          fontWeight: FontWeight.w600),
+                    ),
+                  ),
+                  if (widget.showResult)
+                    const Padding(
+                      padding: EdgeInsets.only(left: 8),
+                      child: Text('RESULT',
+                          style: TextStyle(
+                              color: AppColors.accent,
+                              fontSize: 9,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.6)),
+                    ),
+                ],
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _posterGradient() {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            widget.tutorial.accent.withValues(alpha: 0.55),
+            AppColors.background,
+          ],
+        ),
+      ),
+      child: const SizedBox.expand(),
     );
   }
 }
